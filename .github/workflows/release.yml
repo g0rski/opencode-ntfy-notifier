@@ -1,0 +1,91 @@
+name: Publish to npm
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: npm-release-main
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - name: Validate tested commit and release version
+        id: release
+        env:
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || {
+            echo "Invalid package version: $VERSION"
+            exit 1
+          }
+          git merge-base --is-ancestor "$TESTED_SHA" origin/main || {
+            echo "Tested commit $TESTED_SHA is no longer reachable from main"
+            exit 1
+          }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+      - run: npm ci --include=dev
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run pack:check
+      - name: Create immutable version tag
+        env:
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          if git show-ref --verify --quiet "refs/tags/${TAG}"; then
+            TAG_SHA="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+            test "$TAG_SHA" = "$TESTED_SHA" || {
+              echo "Tag ${TAG} already exists at a different commit (${TAG_SHA}). Bump the package version."
+              exit 1
+            }
+            echo "Tag ${TAG} already points to the tested commit; continuing an interrupted release."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" "$TESTED_SHA" -m "Release ${TAG}"
+            git push origin "$TAG"
+          fi
+      - name: Check if this version is already published
+        id: npm-version
+        env:
+          PACKAGE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is already published."
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish package
+        if: steps.npm-version.outputs.published == 'false'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if [[ "$VERSION" == *-* ]]; then DIST_TAG=next; else DIST_TAG=latest; fi
+          npm publish --access public --tag "$DIST_TAG"

@@ -58,7 +58,7 @@ npm run pack:check
 
 ## Releases
 
-Only after a push to `main` passes CI, GitHub Actions creates the annotated tag matching the version in `package.json` (for example, `v1.0.0`) and dispatches the npm publication workflow. Pull request builds never create release tags, and publishing can only be dispatched by this post-CI release job. The repository must have an `NPM_TOKEN` Actions secret with permission to publish this package. Bump both `package.json` and `package-lock.json` before the next release; the release job fails rather than moving or overwriting an existing tag.
+CI verifies pull requests and pushes to `main` without release permissions. A separate release workflow starts only after a successful CI run for a push to `main`; it checks out the exact tested commit, reruns the checks, creates the matching immutable `v<version>` tag, and publishes to npm. Pull request builds never create tags or publish. The repository must have an `NPM_TOKEN` Actions secret with permission to publish this package. Bump both `package.json` and `package-lock.json` before the next release; the release job fails rather than moving or overwriting an existing tag.
 
 ## License
 
