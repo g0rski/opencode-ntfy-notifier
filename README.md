@@ -58,7 +58,7 @@ npm run pack:check
 
 ## Releases
 
-The GitHub Actions release workflow publishes on a `v*` tag after verifying that the tag matches `package.json` and running CI. The repository must have an `NPM_TOKEN` Actions secret with permission to publish this package. For example, set the package version to `1.0.1`, commit it, then push tag `v1.0.1` at that commit.
+After a push to `main` passes CI, GitHub Actions creates the annotated tag matching the version in `package.json` (for example, `v1.0.0`) and dispatches the npm publication workflow. The repository must have an `NPM_TOKEN` Actions secret with permission to publish this package. Bump both `package.json` and `package-lock.json` before the next release; the release job fails rather than moving or overwriting an existing tag. Manual `v*` tags also start the publication workflow.
 
 ## License
 

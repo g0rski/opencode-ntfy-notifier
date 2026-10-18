@@ -21,3 +21,39 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run pack:check
+
+  release:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Create version tag and start npm publishing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="v${VERSION}"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Release tag ${TAG} already exists. Bump package.json and package-lock.json before releasing another version."
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG}" "${GITHUB_SHA}" -m "Release ${TAG}"
+          git push origin "${TAG}"
+
+          gh api --method POST \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/publish.yml/dispatches" \
+            -f ref=main \
+            -f "inputs[tag]=${TAG}"
