@@ -54,7 +54,8 @@ This file guides Claude Code when working in this repository.
 - Before releasing, bump `version` in both `package.json` and `package-lock.json` and commit the change.
 - A successful CI run for a push to `main` creates the matching `v<version>` tag and starts the npm publish workflow.
 - Release tags are immutable: if `v<version>` already exists, the release job fails. Never move or overwrite an existing tag; increment the package version for the next release.
-- Manual `v*` tags also start npm publishing. The package is published with the repository's `NPM_TOKEN` Actions secret.
+- Release tags and npm publishing are created only by the post-CI release job for pushes to `main`; never tag or publish from a pull request build.
+- The package is published with the repository's `NPM_TOKEN` Actions secret.
 
 ## Codeman Environment
 
