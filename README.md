@@ -32,6 +32,8 @@ The variables must be present in the environment of the OpenCode server/service 
 | `session.status` | Status changes to `idle`; body uses the latest assistant text excerpt | `Status changed to idle` |
 | `permission.asked` | OpenCode asks for permission | `Permission required` |
 | `form.created` | A question/form is waiting for input | `Your input is required` |
+| Tool hook `execute.before` | A `question`, `functions.question`, or `functions_question` tool is invoked | `Your input is required` |
+| `question.asked`, `functions.question` | Compatibility with wrappers/servers that emit these signals directly | `Your input is required` |
 | `session.execution.failed` | A session execution fails | `Session failed` |
 | `session.error` | Compatibility with servers that emit this event | `Session error` |
 | `session.status` (`retry`) | User action is indicated, or retry attempt reaches three | `Session needs attention` / `Session is retrying` |
@@ -46,6 +48,10 @@ Messages are shortened to about 240 characters. The plugin only sends notificati
 - If the last assistant text is not available at the time the session becomes idle, a short English fallback is sent.
 - This is an OpenCode V2 plugin. `session.execution.failed` is the declared V2 failure event. `session.error` is also recognized defensively, but is not declared in the inspected V2 public event schema.
 - The plugin does not subscribe to every message/tool event, to avoid noisy notifications.
+- In Codeman, `functions.question` can be the displayed tool name rather than an event type. The V2 tool hook detects question calls before they wait for an answer, without waiting for ntfy delivery. Only the exact question tool names listed above are recognized; unrelated tools and completed tool output do not trigger alerts.
+- Question alerts include only the first question's short text (or a generic fallback), not the full questionnaire, options, answers, or arbitrary tool arguments. Native V2 forms still use `form.created`; `question.asked` and a direct `functions.question` event are defensive compatibility paths, not guaranteed V2 events. This does not add V1 plugin API support.
+- Repeated question signals with the same explicit session and request/call/form ID are deduplicated for five minutes (up to 1,000 recent IDs). Different IDs and signals without IDs are not merged, even when the text is identical. Form IDs and tool call IDs are separate identities, so a tool that also creates a native form can produce two alerts; suppressing them by timing alone could hide a separate question.
+- Only notification-relevant events enter the bounded delivery queue; token/message streaming cannot fill it.
 
 ## Development
 

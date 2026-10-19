@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { eventNotification, eventSessionId } from "../dist/events.js"
+import { eventNotification, eventSessionId, questionNotificationKey, questionToolEvent } from "../dist/events.js"
 import { latestAssistantText, truncateText } from "../dist/text.js"
 
 test("notifies only when a session goes idle; ignores busy", () => {
@@ -43,4 +43,50 @@ test("extracts the latest assistant text and excludes tool output", () => {
 test("truncates descriptions and finds session IDs on either event envelope", () => {
   assert.equal(truncateText("a".repeat(250)).length, 240)
   assert.equal(eventSessionId({ type: "permission.asked", data: { sessionID: "ses_abc" } }), "ses_abc")
+})
+
+test("recognizes exact question tool names without notifying on arbitrary tools", () => {
+  for (const tool of ["question", "functions.question", "functions_question"]) {
+    const event = questionToolEvent({ tool, sessionID: "ses_1", id: "call_1", input: { questions: [{ question: "Which environment?" }] } })
+    assert.equal(eventNotification(event).message, "Which environment?")
+    assert.equal(eventSessionId(event), "ses_1")
+  }
+  for (const tool of ["read", "execute", "my_question", "other.question", "functions.questionnaire", "Question"]) {
+    assert.equal(questionToolEvent({ tool, sessionID: "ses_1" }), undefined)
+  }
+  for (const call of [null, [], {}, { tool: "question" }, { tool: "question", sessionID: "" }]) {
+    assert.equal(questionToolEvent(call), undefined)
+  }
+})
+
+test("compatibility questions support event envelopes and do not expose options or arbitrary input", () => {
+  for (const type of ["functions.question", "question.asked"]) {
+    for (const envelope of ["data", "properties"]) {
+      const notification = eventNotification({ type, [envelope]: {
+        input: { questions: [{ question: "Choose the target", options: [{ label: "secret option" }] }, { question: "secret second question" }], secret: "private" },
+      } })
+      assert.deepEqual(notification, { title: "Your input is required", message: "Choose the target", priority: 4, tags: "question" })
+    }
+    assert.equal(eventNotification({ type, questions: [{ header: "Deployment" }] }).message, "Deployment")
+    assert.equal(eventNotification({ type, data: { question: "Continue?" } }).message, "Continue?")
+    for (const input of [null, false, "arbitrary secret", [], { questions: [null] }, { secret: "private" }]) {
+      assert.equal(eventNotification({ type, data: { input } }).message, "The agent is waiting for your answer.")
+    }
+    assert.equal(eventNotification({ type, questions: [{ question: "a".repeat(500) }] }).message.length, 240)
+  }
+})
+
+test("question keys use stable IDs and never conflate sessions, kinds, or same-text questions", () => {
+  const tool = questionToolEvent({ tool: "question", sessionID: "ses_1", id: "id_1" })
+  const replay = { type: "functions.question", data: { sessionID: "ses_1", callID: "id_1" } }
+  assert.equal(questionNotificationKey(tool), questionNotificationKey(replay))
+  const form = { type: "form.created", data: { form: { sessionID: "ses_1", id: "id_1" } } }
+  assert.equal(eventSessionId(form), "ses_1")
+  assert.notEqual(questionNotificationKey(tool), questionNotificationKey(form))
+  assert.notEqual(questionNotificationKey(tool), questionNotificationKey({ ...replay, data: { sessionID: "ses_2", callID: "id_1" } }))
+  assert.notEqual(questionNotificationKey(tool), questionNotificationKey({ type: "question.asked", properties: { sessionID: "ses_1", id: "id_1" } }))
+  assert.equal(questionNotificationKey({ type: "question.asked", sessionID: "ses_1", questions: [{ question: "Same text" }] }), undefined)
+  assert.equal(questionNotificationKey({ type: "question.asked", id: "event_1", data: { sessionID: "ses_1" } }), '["ses_1","question.asked","event_1"]')
+  assert.equal(questionNotificationKey({ type: "question.asked", requestID: "request_1" }), undefined)
+  assert.equal(questionNotificationKey({ type: "session.status", sessionID: "ses_1", id: "event_1" }), undefined)
 })

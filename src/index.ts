@@ -1,16 +1,18 @@
 import { Plugin } from "@opencode/plugin"
 import { readConfig } from "./config.js"
-import { eventNotification, eventSessionId } from "./events.js"
+import { eventNotification, eventSessionId, questionNotificationKey, questionToolEvent } from "./events.js"
 import { sendNotification } from "./ntfy.js"
 import { latestAssistantText } from "./text.js"
-import type { OpenCodeEvent } from "./types.js"
+import type { Notification, OpenCodeEvent } from "./types.js"
 
 const MAX_PENDING = 100
 const ERROR_DEDUPE_MS = 30_000
+const QUESTION_DEDUPE_MS = 300_000
+const MAX_RECENT_QUESTIONS = 1_000
 
 export default Plugin.define({
   id: "opencode-ntfy-notifier",
-  setup(ctx) {
+  async setup(ctx) {
     let config
     try {
       config = readConfig(process.env)
@@ -21,13 +23,18 @@ export default Plugin.define({
 
     const controller = new AbortController()
     const recentErrors = new Map<string, number>()
+    const recentQuestions = new Map<string, number>()
     let pending = 0
     let work = Promise.resolve()
 
-    const handle = async (event: OpenCodeEvent) => {
+    const handle = async (event: OpenCodeEvent, notification: Notification) => {
       if (controller.signal.aborted) return
-      let notification = eventNotification(event)
-      if (!notification) return
+      const questionKey = questionNotificationKey(event)
+      const now = Date.now()
+      for (const [key, timestamp] of recentQuestions) {
+        if (now - timestamp >= QUESTION_DEDUPE_MS) recentQuestions.delete(key)
+      }
+      if (questionKey && recentQuestions.has(questionKey)) return
       const sessionID = eventSessionId(event)
       if (event.type === "session.status" && notification.title === "Status changed to idle" && sessionID) {
         const errorAt = recentErrors.get(sessionID)
@@ -51,7 +58,30 @@ export default Plugin.define({
       }
 
       await sendNotification(config, notification, fetch, controller.signal)
+      if (questionKey) {
+        recentQuestions.set(questionKey, Date.now())
+        if (recentQuestions.size > MAX_RECENT_QUESTIONS) recentQuestions.delete(recentQuestions.keys().next().value!)
+      }
     }
+
+    const enqueue = (event: OpenCodeEvent) => {
+      if (controller.signal.aborted) return
+      const notification = eventNotification(event)
+      if (!notification) return
+      if (pending >= MAX_PENDING) {
+        console.error("[opencode-ntfy-notifier] Notification queue is full; dropping an event.")
+        return
+      }
+      pending++
+      work = work.then(() => handle(event, notification))
+        .catch(() => console.error("[opencode-ntfy-notifier] Could not deliver a notification."))
+        .finally(() => { pending-- })
+    }
+
+    const questionHook = await ctx.tool.hook("execute.before", (call) => {
+      const event = questionToolEvent(call)
+      if (event) enqueue(event)
+    })
 
     void (async () => {
       let reconnectDelay = 1_000
@@ -59,14 +89,7 @@ export default Plugin.define({
         try {
           for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
             if (controller.signal.aborted) break
-            if (pending >= MAX_PENDING) {
-              console.error("[opencode-ntfy-notifier] Notification queue is full; dropping an event.")
-              continue
-            }
-            pending++
-            work = work.then(() => handle(event as OpenCodeEvent))
-              .catch(() => console.error("[opencode-ntfy-notifier] Could not deliver a notification."))
-              .finally(() => { pending-- })
+            enqueue(event as OpenCodeEvent)
           }
           reconnectDelay = 1_000
           if (!controller.signal.aborted) await new Promise((resolve) => setTimeout(resolve, reconnectDelay))
@@ -78,8 +101,9 @@ export default Plugin.define({
       }
     })()
 
-    return () => {
+    return async () => {
       controller.abort()
+      await questionHook.dispose()
     }
   },
 })
